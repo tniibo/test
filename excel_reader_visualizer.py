@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 
 # 日本語フォントの設定
 def setup_japanese_font():
-    """日本語フォントを設定（Azure Linux環境対応）"""
+    """日本語フォントを設定"""
     import os
     import platform
     
@@ -39,44 +39,52 @@ def setup_japanese_font():
         'DejaVu Sans'  # Fallback
     ]
     
-    # Azure環境かどうかチェック
+    # システムフォントを取得
+    available_fonts = fm.findSystemFonts()
+    font_found = False
+    
+    # Azure/Linux環境用の追加フォントパスをチェック
     is_azure = os.environ.get('WEBSITE_INSTANCE_ID') is not None or \
                os.environ.get('AZURE_FUNCTIONS_ENVIRONMENT') is not None
     
-    # Linux環境での追加フォントパス
     if platform.system() == 'Linux' or is_azure:
-        # Azure App Service/Functions用のフォントパス
-        additional_font_paths = [
+        # Linux/Azure用のフォントディレクトリ
+        additional_font_dirs = [
             '/usr/share/fonts/opentype/noto/',
             '/usr/share/fonts/truetype/noto/',
             '/usr/share/fonts/truetype/liberation/',
+            '/usr/share/fonts/truetype/ipafont/',
+            '/usr/share/fonts/truetype/vlgothic/',
             '/usr/local/share/fonts/',
             '/home/site/wwwroot/fonts/',  # カスタムフォント用
             '/opt/fonts/',  # カスタムフォント用
         ]
         
-        # フォントパスを追加
-        for path in additional_font_paths:
-            if os.path.exists(path):
-                fm.fontManager.addfont(path)
-    
-    available_fonts = fm.findSystemFonts()
-    font_found = False
+        # ディレクトリ内のフォントファイルを直接探す
+        for font_dir in additional_font_dirs:
+            if os.path.exists(font_dir):
+                try:
+                    for font_file in os.listdir(font_dir):
+                        if font_file.endswith(('.ttf', '.otf', '.ttc')):
+                            font_path = os.path.join(font_dir, font_file)
+                            available_fonts.append(font_path)
+                except:
+                    pass
     
     # フォントパスから直接フォントを探す
     for font_path in available_fonts:
-        font_basename = os.path.basename(font_path).lower()
-        for font_name in japanese_fonts:
-            if font_name.lower().replace(' ', '') in font_basename.replace('-', '').replace('_', ''):
-                try:
-                    # フォントプロパティを直接設定
+        try:
+            font_basename = os.path.basename(font_path).lower()
+            for font_name in japanese_fonts:
+                if font_name.lower().replace(' ', '') in font_basename.replace('-', '').replace('_', ''):
+                    # フォントプロパティを使用して設定
                     prop = fm.FontProperties(fname=font_path)
                     plt.rcParams['font.family'] = prop.get_name()
                     font_found = True
                     print(f"使用フォント: {font_name} ({font_path})")
                     break
-                except:
-                    continue
+        except:
+            continue
         if font_found:
             break
     
@@ -101,15 +109,17 @@ def setup_japanese_font():
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
         
         print("警告: 日本語フォントが見つかりません。文字化けする可能性があります。")
-        print("\n=== Azure/Linux環境での日本語フォントインストール方法 ===")
-        print("1. Dockerfileを使用する場合:")
-        print("   RUN apt-get update && apt-get install -y fonts-noto-cjk fonts-ipafont-gothic")
-        print("\n2. Azure App Serviceの場合:")
-        print("   - スタートアップコマンドに追加:")
-        print("   apt-get update && apt-get install -y fonts-noto-cjk")
-        print("\n3. カスタムフォントを使用する場合:")
-        print("   - /home/site/wwwroot/fonts/ にフォントファイルを配置")
-        print("=" * 60)
+        
+        if platform.system() == 'Linux' or is_azure:
+            print("\n=== Azure/Linux環境での日本語フォントインストール方法 ===")
+            print("1. Dockerfileを使用する場合:")
+            print("   RUN apt-get update && apt-get install -y fonts-noto-cjk fonts-ipafont-gothic")
+            print("\n2. Azure App Serviceの場合:")
+            print("   - スタートアップコマンドに追加:")
+            print("   apt-get update && apt-get install -y fonts-noto-cjk")
+            print("\n3. カスタムフォントを使用する場合:")
+            print("   - /home/site/wwwroot/fonts/ にフォントファイルを配置")
+            print("=" * 60)
     
     # 負の符号の表示設定
     plt.rcParams['axes.unicode_minus'] = False
@@ -1314,7 +1324,7 @@ class ExcelToMarkdownPreprocessor:
     def export_for_ai_processing(self, output_dir="ai_input", show_images=False, 
                                 compact_json=True, use_pagination=True,
                                 rows_per_page=30, cols_per_page=10,
-                                use_print_area=True):
+                                use_print_area=True, split_json_by_sheet=True):
         """
         AI処理用にデータをエクスポート（ページ単位のデータ紐付け対応）
         
@@ -1326,6 +1336,7 @@ class ExcelToMarkdownPreprocessor:
             rows_per_page (int): 1ページあたりの行数
             cols_per_page (int): 1ページあたりの列数
             use_print_area (bool): 印刷範囲のみを対象とするか
+            split_json_by_sheet (bool): JSONをシート毎に分割するか
         """
         output_path = Path(output_dir)
         output_path.mkdir(exist_ok=True)
@@ -1384,18 +1395,74 @@ class ExcelToMarkdownPreprocessor:
                 )
                 export_data[sheet_name]['visualization'] = f"{sheet_name}_structure.png"
         
-        # メインJSONファイルとして保存
-        if use_pagination:
-            # ページ単位のデータ構造で保存
-            json_path = output_path / "paged_data.json"
+        # JSONファイルの保存
+        json_paths = []
+        
+        if split_json_by_sheet:
+            # シート毎に個別のJSONファイルとして保存
+            for sheet_name, sheet_data in export_data.items():
+                # シート名をファイル名に使用（特殊文字を置換）
+                safe_sheet_name = sheet_name.replace('/', '_').replace('\\', '_').replace(':', '_')
+                
+                if use_pagination:
+                    sheet_json_path = output_path / f"{safe_sheet_name}_paged.json"
+                else:
+                    sheet_json_path = output_path / f"{safe_sheet_name}.json"
+                
+                with open(sheet_json_path, 'w', encoding='utf-8') as f:
+                    if compact_json:
+                        json.dump(sheet_data, f, ensure_ascii=False, separators=(',', ':'), default=str)
+                    else:
+                        json.dump(sheet_data, f, ensure_ascii=False, indent=2, default=str)
+                
+                json_paths.append(sheet_json_path)
+                
+                # ページ単位のデータも個別保存（非コンパクトモードの場合）
+                if use_pagination and not compact_json and 'pages' in sheet_data:
+                    sheet_dir = output_path / safe_sheet_name
+                    sheet_dir.mkdir(exist_ok=True)
+                    for page_key, page_data in sheet_data['pages'].items():
+                        page_json = sheet_dir / f"{page_key}.json"
+                        with open(page_json, 'w', encoding='utf-8') as f:
+                            json.dump(page_data, f, ensure_ascii=False, indent=2, default=str)
+            
+            # インデックスファイルを作成（シート一覧）
+            files_dict = {}
+            for sheet_name in export_data.keys():
+                safe_name = sheet_name.replace('/', '_').replace('\\', '_').replace(':', '_')
+                suffix = 'paged' if use_pagination else ''
+                if suffix:
+                    files_dict[sheet_name] = f"{safe_name}_{suffix}.json"
+                else:
+                    files_dict[sheet_name] = f"{safe_name}.json"
+            
+            index_data = {
+                'sheets': list(export_data.keys()),
+                'files': files_dict,
+                'pagination': use_pagination,
+                'print_area_only': use_print_area
+            }
+            index_path = output_path / "index.json"
+            with open(index_path, 'w', encoding='utf-8') as f:
+                json.dump(index_data, f, ensure_ascii=False, indent=2, default=str)
+            json_paths.append(index_path)
+        else:
+            # 従来の単一ファイル保存
+            if use_pagination:
+                json_path = output_path / "paged_data.json"
+            else:
+                json_path = output_path / "structured_data.json"
+            
             with open(json_path, 'w', encoding='utf-8') as f:
                 if compact_json:
                     json.dump(export_data, f, ensure_ascii=False, separators=(',', ':'), default=str)
                 else:
                     json.dump(export_data, f, ensure_ascii=False, indent=2, default=str)
             
+            json_paths = [json_path]
+            
             # 各ページのデータを個別ファイルでも保存（オプション）
-            if not compact_json:
+            if use_pagination and not compact_json:
                 for sheet_name, sheet_data in export_data.items():
                     if 'pages' in sheet_data:
                         sheet_dir = output_path / sheet_name
@@ -1404,14 +1471,6 @@ class ExcelToMarkdownPreprocessor:
                             page_json = sheet_dir / f"{page_key}.json"
                             with open(page_json, 'w', encoding='utf-8') as f:
                                 json.dump(page_data, f, ensure_ascii=False, indent=2, default=str)
-        else:
-            # 従来の構造で保存
-            json_path = output_path / "structured_data.json"
-            with open(json_path, 'w', encoding='utf-8') as f:
-                if compact_json:
-                    json.dump(export_data, f, ensure_ascii=False, separators=(',', ':'), default=str)
-                else:
-                    json.dump(export_data, f, ensure_ascii=False, indent=2, default=str)
         
         # Markdown変換ガイドを生成
         guide_path = output_path / "conversion_guide.md"
@@ -1419,16 +1478,31 @@ class ExcelToMarkdownPreprocessor:
             f.write(self._generate_paged_guide(export_data, use_pagination))
         
         print(f"\n✅ AI処理用データを出力しました:")
-        print(f"  - JSONデータ: {json_path}")
         
-        # ファイルサイズを表示
-        file_size = json_path.stat().st_size
-        if file_size < 1024:
-            print(f"    サイズ: {file_size} bytes")
-        elif file_size < 1024 * 1024:
-            print(f"    サイズ: {file_size / 1024:.1f} KB")
+        if split_json_by_sheet:
+            print(f"  - JSONデータ: シート毎に分割")
+            for json_path in json_paths:
+                if 'index.json' in str(json_path):
+                    print(f"    インデックス: {json_path.name}")
+                else:
+                    file_size = json_path.stat().st_size
+                    if file_size < 1024:
+                        size_str = f"{file_size} bytes"
+                    elif file_size < 1024 * 1024:
+                        size_str = f"{file_size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{file_size / (1024 * 1024):.1f} MB"
+                    print(f"    {json_path.name}: {size_str}")
         else:
-            print(f"    サイズ: {file_size / (1024 * 1024):.1f} MB")
+            print(f"  - JSONデータ: {json_paths[0]}")
+            # ファイルサイズを表示
+            file_size = json_paths[0].stat().st_size
+            if file_size < 1024:
+                print(f"    サイズ: {file_size} bytes")
+            elif file_size < 1024 * 1024:
+                print(f"    サイズ: {file_size / 1024:.1f} KB")
+            else:
+                print(f"    サイズ: {file_size / (1024 * 1024):.1f} MB")
         
         if use_pagination:
             total_pages = sum(len(s['pages']) for s in export_data.values() if 'pages' in s)
@@ -1700,7 +1774,7 @@ def main():
         # インスタンスの作成
         processor = ExcelToMarkdownPreprocessor(excel_file)
         
-        # ページ分割でAI処理用データをエクスポート
+        # ページ分割でAI処理用データをエクスポート（シート毎にJSON分割）
         print("ページ分割してAI処理用データを生成中...")
         integrated_data = processor.export_for_ai_processing(
             "ai_input",
@@ -1708,7 +1782,8 @@ def main():
             compact_json=True,      # JSONを最小化
             use_pagination=True,    # ページ分割を使用
             rows_per_page=30,       # 1ページあたり30行
-            cols_per_page=10        # 1ページあたり10列
+            cols_per_page=10,       # 1ページあたり10列
+            split_json_by_sheet=True  # シート毎にJSONファイルを分割
         )
         
         # 各シートの簡易サマリー
