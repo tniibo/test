@@ -17,41 +17,99 @@ warnings.filterwarnings('ignore')
 
 # 日本語フォントの設定
 def setup_japanese_font():
-    """日本語フォントを設定"""
-    # 利用可能な日本語フォントを探す
+    """日本語フォントを設定（Azure Linux環境対応）"""
+    import os
+    import platform
+    
+    # 利用可能な日本語フォントを探す（優先順位付き）
     japanese_fonts = [
+        'Noto Sans CJK JP',  # Azure/Linux推奨
+        'Noto Sans JP',  # Cross-platform
+        'IPAexGothic',  # Linux/Unix
+        'IPAPGothic',  # Linux/Unix
+        'IPAGothic',  # Linux/Unix
+        'TakaoGothic',  # Linux/Unix
+        'Takao',  # Linux/Unix
+        'VL Gothic',  # Linux
         'MS Gothic',  # Windows
         'MS Mincho',  # Windows
         'Yu Gothic',  # Windows
         'Hiragino Sans',  # Mac
         'Hiragino Maru Gothic Pro',  # Mac
-        'IPAexGothic',  # Linux/Unix
-        'IPAPGothic',  # Linux/Unix
-        'Takao',  # Linux/Unix
-        'Noto Sans CJK JP',  # Cross-platform
-        'Noto Sans JP',  # Cross-platform
         'DejaVu Sans'  # Fallback
     ]
+    
+    # Azure環境かどうかチェック
+    is_azure = os.environ.get('WEBSITE_INSTANCE_ID') is not None or \
+               os.environ.get('AZURE_FUNCTIONS_ENVIRONMENT') is not None
+    
+    # Linux環境での追加フォントパス
+    if platform.system() == 'Linux' or is_azure:
+        # Azure App Service/Functions用のフォントパス
+        additional_font_paths = [
+            '/usr/share/fonts/opentype/noto/',
+            '/usr/share/fonts/truetype/noto/',
+            '/usr/share/fonts/truetype/liberation/',
+            '/usr/local/share/fonts/',
+            '/home/site/wwwroot/fonts/',  # カスタムフォント用
+            '/opt/fonts/',  # カスタムフォント用
+        ]
+        
+        # フォントパスを追加
+        for path in additional_font_paths:
+            if os.path.exists(path):
+                fm.fontManager.addfont(path)
     
     available_fonts = fm.findSystemFonts()
     font_found = False
     
-    for font_name in japanese_fonts:
-        for font_path in available_fonts:
-            if font_name.lower() in font_path.lower():
+    # フォントパスから直接フォントを探す
+    for font_path in available_fonts:
+        font_basename = os.path.basename(font_path).lower()
+        for font_name in japanese_fonts:
+            if font_name.lower().replace(' ', '') in font_basename.replace('-', '').replace('_', ''):
+                try:
+                    # フォントプロパティを直接設定
+                    prop = fm.FontProperties(fname=font_path)
+                    plt.rcParams['font.family'] = prop.get_name()
+                    font_found = True
+                    print(f"使用フォント: {font_name} ({font_path})")
+                    break
+                except:
+                    continue
+        if font_found:
+            break
+    
+    # フォント名で検索（fallback）
+    if not font_found:
+        for font_name in japanese_fonts:
+            try:
                 plt.rcParams['font.family'] = [font_name]
+                # テスト描画で確認
+                fig, ax = plt.subplots(figsize=(1, 1))
+                ax.text(0.5, 0.5, 'テスト', fontsize=12)
+                plt.close(fig)
                 font_found = True
                 print(f"使用フォント: {font_name}")
                 break
-        if font_found:
-            break
+            except:
+                continue
     
     if not font_found:
         # フォントが見つからない場合の設定
         plt.rcParams['font.family'] = ['sans-serif']
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        
         print("警告: 日本語フォントが見つかりません。文字化けする可能性があります。")
-        print("日本語フォント（NotoSansCJK-Regular.ttc等）をインストールしてください。")
+        print("\n=== Azure/Linux環境での日本語フォントインストール方法 ===")
+        print("1. Dockerfileを使用する場合:")
+        print("   RUN apt-get update && apt-get install -y fonts-noto-cjk fonts-ipafont-gothic")
+        print("\n2. Azure App Serviceの場合:")
+        print("   - スタートアップコマンドに追加:")
+        print("   apt-get update && apt-get install -y fonts-noto-cjk")
+        print("\n3. カスタムフォントを使用する場合:")
+        print("   - /home/site/wwwroot/fonts/ にフォントファイルを配置")
+        print("=" * 60)
     
     # 負の符号の表示設定
     plt.rcParams['axes.unicode_minus'] = False
